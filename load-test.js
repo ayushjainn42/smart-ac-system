@@ -1,5 +1,5 @@
 const mqtt = require("mqtt");
-const NUM_ZONES = 50; // bump to 200 later to match your plan's "worst case" scenario
+const NUM_ZONES = 200; // bump to 200 later to match your plan's "worst case" scenario
 const client = mqtt.connect("mqtt://localhost:1883", { clientId: "load-test" });
 const pending = new Map();
 const latencies = [];
