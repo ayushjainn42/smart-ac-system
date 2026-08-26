@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Smart AC — Facilities Dashboard</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background:#0f1115; color:#e6e6e6; margin:0; padding:24px; }
+  h1 { font-size: 20px; margin-bottom: 20px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:16px; }
+  .card { background:#1a1d24; border-radius:10px; padding:16px; border:1px solid #2a2e37; }
+  .card h2 { margin:0 0 8px; font-size:15px; }
+  .row { display:flex; justify-content:space-between; font-size:13px; color:#9aa0aa; margin:4px 0; }
+  .state { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; margin-top:8px; }
+  .cooling_on { background:#1b3a5c; color:#7ec8ff; }
+  .heating_on { background:#5c2c1b; color:#ffab7e; }
+  .idle { background:#2a2e37; color:#c7cbd1; }
+  .eco { background:#1c3a2a; color:#7ee6a8; }
+  .faulted { border-color:#c0392b; }
+  .faulted h2::after { content:" ⚠ FAULT"; color:#ff6b6b; }
+</style>
+</head>
+<body>
+<h1>Smart AC — Live Zone Status</h1>
+<div class="grid" id="grid"></div>
+<script>
+async function refresh() {
+  const res = await fetch("/zones/status");
+  const zones = await res.json();
+  document.getElementById("grid").innerHTML = zones.map(z => `
+    <div class="card ${z.faulted ? "faulted" : ""}">
+      <h2>${z.name || z.zone_id}</h2>
+      <div class="row"><span>Temp</span><span>${z.lastReading ? z.lastReading.temp + "°C" : "—"}</span></div>
+      <div class="row"><span>Humidity</span><span>${z.lastReading ? z.lastReading.humidity + "%" : "—"}</span></div>
+      <div class="row"><span>Occupied</span><span>${z.lastReading ? (z.lastReading.occupied ? "Yes" : "No") : "—"}</span></div>
+      <span class="state ${z.actuatorState}">${z.actuatorState}</span>
+    </div>`).join("");
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
