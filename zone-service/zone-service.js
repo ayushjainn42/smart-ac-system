@@ -8,13 +8,18 @@ const DEFAULT_ZONE_CFG = { temp_setpoint: 22.0, tolerance: 1.0, occupancy_relax:
 
 const db = new Database("./logs/readings.db");
 db.exec(`CREATE TABLE IF NOT EXISTS readings (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, timestamp TEXT, temp REAL, humidity REAL, occupied INTEGER, actuator_state TEXT, latency_ms INTEGER);
-CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, type TEXT, triggered_at TEXT, resolved_at TEXT);`);
+CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, type TEXT, triggered_at TEXT, resolved_at TEXT);
+CREATE TABLE IF NOT EXISTS aggregates (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, window_start TEXT, window_end TEXT, avg_temp REAL, avg_humidity REAL, sample_count INTEGER);`);
 const insertReading = db.prepare(`INSERT INTO readings (zone_id,timestamp,temp,humidity,occupied,actuator_state,latency_ms) VALUES (@zone_id,@timestamp,@temp,@humidity,@occupied,@actuator_state,@latency_ms)`);
 const insertAlert = db.prepare(`INSERT INTO alerts (zone_id,type,triggered_at) VALUES (?, 'zone_fault', ?)`);
 const resolveAlert = db.prepare(`UPDATE alerts SET resolved_at=? WHERE zone_id=? AND resolved_at IS NULL`);
+const insertAggregate = db.prepare(`INSERT INTO aggregates (zone_id,window_start,window_end,avg_temp,avg_humidity,sample_count) VALUES (@zone_id,@window_start,@window_end,@avg_temp,@avg_humidity,@sample_count)`);
+
+const AGGREGATION_WINDOW_MS = 5 * 60 * 1000; // 5 minutes, per the Project Plan's processing requirement
+let windowStart = new Date().toISOString();
 
 const zoneState = {};
-zones.forEach((z) => { zoneState[z.zone_id] = { ...z, actuatorState: "idle", faulted: false, lastMessageAt: null, lastReading: null }; });
+zones.forEach((z) => { zoneState[z.zone_id] = { ...z, actuatorState: "idle", faulted: false, lastMessageAt: null, lastReading: null, buffer: [] }; });
 
 function getConfig(zoneId) {
   return zones.find((z) => z.zone_id === zoneId) || { zone_id: zoneId, ...DEFAULT_ZONE_CFG };
@@ -33,11 +38,12 @@ client.on("message", (topic, payload) => {
   const r = JSON.parse(payload.toString());
   const cfg = getConfig(r.zone_id);
 
-  if (!zoneState[r.zone_id]) zoneState[r.zone_id] = { ...cfg, actuatorState: "idle", faulted: false, lastMessageAt: null, lastReading: null };
+  if (!zoneState[r.zone_id]) zoneState[r.zone_id] = { ...cfg, actuatorState: "idle", faulted: false, lastMessageAt: null, lastReading: null, buffer: [] };
   const state = zoneState[r.zone_id];
   if (state.faulted) { state.faulted = false; resolveAlert.run(new Date().toISOString(), r.zone_id); console.log(`[zone-service] ${r.zone_id} recovered`); }
   state.lastMessageAt = Date.now();
   state.lastReading = r;
+  state.buffer.push({ temp: r.temp, humidity: r.humidity });
 
   const actuatorState = decide(cfg, r);
   state.actuatorState = actuatorState;
@@ -60,11 +66,37 @@ setInterval(() => {
   });
 }, 5000);
 
+// 5-minute rolling aggregation, per the Project Plan's processing/aggregation requirement
+setInterval(() => {
+  const windowEnd = new Date().toISOString();
+  Object.keys(zoneState).forEach((zoneId) => {
+    const s = zoneState[zoneId];
+    if (s.buffer.length === 0) return;
+    const n = s.buffer.length;
+    const avgTemp = s.buffer.reduce((sum, x) => sum + x.temp, 0) / n;
+    const avgHumidity = s.buffer.reduce((sum, x) => sum + x.humidity, 0) / n;
+    insertAggregate.run({
+      zone_id: zoneId,
+      window_start: windowStart,
+      window_end: windowEnd,
+      avg_temp: Number(avgTemp.toFixed(2)),
+      avg_humidity: Number(avgHumidity.toFixed(2)),
+      sample_count: n,
+    });
+    console.log(`[zone-service] aggregate ${zoneId}: avg_temp=${avgTemp.toFixed(2)} avg_humidity=${avgHumidity.toFixed(2)} n=${n}`);
+    s.buffer = [];
+  });
+  windowStart = windowEnd;
+}, AGGREGATION_WINDOW_MS);
+
 const app = express();
 app.use(express.static(path.join(__dirname, "..", "public")));
 app.get("/zones/status", (req, res) => res.json(Object.values(zoneState)));
 app.get("/alerts", (req, res) => res.json(db.prepare("SELECT * FROM alerts ORDER BY id DESC LIMIT 20").all()));
 app.get("/stats/latency", (req, res) => {
   res.json(db.prepare("SELECT AVG(latency_ms) as avg_ms, MAX(latency_ms) as max_ms, COUNT(*) as n FROM readings WHERE latency_ms IS NOT NULL").get());
+});
+app.get("/stats/aggregates", (req, res) => {
+  res.json(db.prepare("SELECT * FROM aggregates ORDER BY id DESC LIMIT 50").all());
 });
 app.listen(4000, () => console.log("[zone-service] REST API + dashboard on :4000"));
