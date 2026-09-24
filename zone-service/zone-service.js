@@ -19,6 +19,7 @@ const AGGREGATION_WINDOW_MS = 5 * 60 * 1000; // 5 minutes, per the Project Plan'
 let windowStart = new Date().toISOString();
 
 const zoneState = {};
+const REAL_ZONE_IDS = new Set(zones.map((z) => z.zone_id));
 zones.forEach((z) => { zoneState[z.zone_id] = { ...z, actuatorState: "idle", faulted: false, lastMessageAt: null, lastReading: null, buffer: [] }; });
 
 function getConfig(zoneId) {
@@ -62,6 +63,12 @@ setInterval(() => {
       s.faulted = true;
       insertAlert.run(zoneId, new Date().toISOString());
       console.warn(`[zone-service] FAULT: ${zoneId} silent`);
+    }
+    // Evict unconfigured/synthetic zones (e.g. load-test bursts) once silent
+    // and faulted, so test traffic can't permanently bloat zoneState and
+    // slow every periodic sweep for the life of the process.
+    if (s.faulted && !REAL_ZONE_IDS.has(zoneId)) {
+      delete zoneState[zoneId];
     }
   });
 }, 5000);
